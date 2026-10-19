@@ -1,0 +1,17 @@
+把图片按"素材ID.png"(或 .jpg)命名放进这个文件夹,游戏会自动替换占位框。
+LÖVE 不支持 .webp,请先转成 png 或 jpg。立绘建议用透明底 PNG。
+
+找不到某个 ID 时会逐级退回:ist_child_happy → ist_child → ist
+所以只放一张 ist.png,所有伊斯塔露立绘位都会用它;
+放 ist_child.png、ist_teen.png、ist_adult.png 就能按年龄段区分。
+
+立绘 ID:
+ist_child_sleep  ist_child_calm  ist_child_happy  ist_child_sad
+ist_teen_calm    ist_teen_happy  ist_teen_sad
+ist_adult_calm   ist_adult_happy ist_adult_sad
+
+背景 ID:
+bg_ruin_night    天钉坠落的山谷 · 夜
+bg_home_room     家中卧室(主界面)
+bg_home_night    家中 · 夜
+bg_sky_tianding  夜空中的钉状冷光

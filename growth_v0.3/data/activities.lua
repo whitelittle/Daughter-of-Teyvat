@@ -1,0 +1,23 @@
+-- 日程活动:ap=行动力消耗,eff=效果(摩拉为负表示学费),unlock=第几年开放,say=她的反应
+return {
+  { name = "吟游课", place = "蒙德", ap = 3, eff = { emo = 4, imag = 3, mood = -4, mora = -40 },
+    say = "她跟着诗人哼了半首歌,剩下半首是自己编的。" },
+  { name = "契约学堂", place = "璃月", ap = 3, eff = { wit = 5, mood = -5, mora = -40 },
+    say = "她把契约条款背得一字不差,然后问你:“永远”是多久?" },
+  { name = "剑术道场", place = "稻妻", ap = 3, eff = { body = 5, mood = -6, mora = -40 },
+    say = "木刀比她还高,她还是挥完了一百下。" },
+  { name = "歌剧院练习", place = "枫丹", ap = 3, eff = { emo = 3, imag = 4, mood = -3, mora = -50 },
+    say = "她在后台看完了一整场戏,散场时哭了。" },
+  { name = "教令院旁听", place = "须弥", ap = 4, eff = { wit = 8, div = 3, exp = 3, mood = -6, mora = -60 }, unlock = 2,
+    say = "讲到古代文字时,她小声纠正了学者的读音。" },
+  { name = "竞技场观摩", place = "纳塔", ap = 4, eff = { body = 8, mood = -8, mora = -40 }, unlock = 2,
+    say = "她学会了一个新词:“再来”。" },
+  { name = "万民堂帮厨", place = "打工", ap = 3, eff = { body = 1, hum = 2, mood = -5, mora = 80 },
+    say = "她把萝卜切成了沙漏的形状。" },
+  { name = "冒险家协会委托", place = "打工", ap = 4, eff = { body = 2, mood = -8, mora = 130 },
+    say = "委托完成了,她把报酬全交给了你。" },
+  { name = "修行权能", place = "秘密", ap = 2, eff = { div = 6, imag = 2, exp = 6, mood = -3 },
+    say = "沙漏里的沙动了一下。窗外好像有什么在看。" },
+  { name = "出门散步", place = "休息", ap = 2, eff = { mood = 15, hum = 2 },
+    say = "她在路边蹲了很久,只为看一只蜗牛爬过去。" },
+}

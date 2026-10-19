@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>天理的女儿 · 养成框架 v0.3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef0f6;--ink:#1b2140;--mut:#5d6486;--warn:#b3392a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d0f1e;--ink:#e8e9f4;--mut:#9aa1c6;--warn:#ef7a62}}
+:root[data-theme="dark"]{--bg:#0d0f1e;--ink:#e8e9f4;--mut:#9aa1c6;--warn:#ef7a62}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.6 "Noto Sans SC","PingFang SC",sans-serif}
+main{max-width:1280px;margin:0 auto;padding:12px}
+h1{font-size:18px;margin:0 0 4px}p{margin:0 0 10px;color:var(--mut)}
+canvas{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:10px;touch-action:manipulation}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 10px;font-size:13px;color:var(--mut)}
+.pick{display:inline-block;padding:7px 14px;border-radius:8px;background:#e9a03a;color:#2a1808;font-weight:700;cursor:pointer}
+.pick input{display:none}
+#err{display:none;white-space:pre-wrap;color:var(--warn);font-size:13px;margin-top:10px;overflow-x:auto}
+</style></head><body><main>
+<h1>天理的女儿 · 养成框架 v0.3</h1>
+<p>从捡到孩子开始。点击推进对话;主界面点“安排”、房间物品或她本人。虚线框是素材占位,框内是素材 ID,可用“选择本地图片”替换。</p>
+<div class="bar"><label class="pick">选择本地图片<input id="files" type="file" accept="image/*" multiple></label>
+<span id="loaded">文件名需为素材 ID,例如 ist.png、ist_child_happy.png、bg_home_room.jpg。图片只在你的浏览器里读取,不会上传。</span></div>
+<canvas id="cv" width="1280" height="720"></canvas>
+<pre id="err"></pre>
+</main>
+<script type="text/plain" id="prelude">local cur = { size = 16 }
+local function mkfont(a, b)
+  local s = type(a) == "number" and a or (b or 16)
+  return { size = s, getHeight = function() return math.floor(s * 1.25) end,
+    getWidth = function(_, str) return _js_measure(tostring(str), s) end }
+end
+love = {
+  graphics = {
+    newFont = mkfont,
+    setFont = function(f) cur = f end,
+    setColor = function(r, g, b, a) _js_color(r, g, b, a or 1) end,
+    rectangle = function(m, x, y, w, h, rx) _js_rect(m, x, y, w, h, rx or 0) end,
+    circle = function(m, x, y, r) _js_circle(m, x, y, r) end,
+    ellipse = function(m, x, y, rx, ry) _js_ellipse(m, x, y, rx, ry) end,
+    polygon = function(m, ...) _js_poly(m, ...) end,
+    line = function(...) _js_line(...) end,
+    setLineWidth = function(w) _js_lw(w) end,
+    print = function(s, x, y) _js_text(tostring(s), x, y, cur.size, -1, "left") end,
+    printf = function(s, x, y, w, al) _js_text(tostring(s), x, y, cur.size, w, al or "left") end,
+    clear = function(r, g, b) _js_clear(r, g, b) end,
+    newImage = function(p)
+      local id = p:match("^assets/(.+)%.%w+$")
+      return { id = id,
+        getWidth = function() local w = _js_imgsize(id); return w end,
+        getHeight = function() local _, h = _js_imgsize(id); return h end }
+    end,
+    draw = function(im, x, y, r, sx, sy) _js_drawimg(im.id, x, y, sx or 1, sy or 1) end,
+  },
+  math = { random = function(a, b) if a then return math.random(a, b) end return math.random() end },
+  mouse = { getPosition = function() return _js_mouse() end },
+  filesystem = { getInfo = function(p)
+    if p == "font.ttf" then return {} end
+    local id = p:match("^assets/(.+)%.png$")
+    if id and _js_hasimg(id) then return {} end
+  end },
+  window = { setTitle = function() end, setMode = function() end },
+}
+</script>
+<script type="text/plain" id="mainlua">package.preload["core.router"] = function(...)
+-- 场景切换
+local R = { scenes = {}, cur = nil, name = nil }
+function R.go(name, args)
+  R.name, R.cur = name, R.scenes[name]
+  if R.cur.enter then R.cur.enter(args or {}) end
+end
+return R
+
+end
+package.preload["core.ui"] = function(...)
+-- 界面基础:颜色、字体、文字、按钮、占位框、弹窗、提示
+local lg = love.graphics
+local U = { W = 1280, H = 720, buttons = {}, mx = 0, my = 0, popup = nil, toastS = nil, toastT = 0 }
+
+U.C = {
+  wall = {0.55, 0.37, 0.19}, floor = {0.64, 0.46, 0.25}, window = {0.99, 0.85, 0.5},
+  wood = {0.47, 0.3, 0.15}, woodD = {0.29, 0.17, 0.08}, woodL = {0.75, 0.53, 0.28},
+  cream = {0.98, 0.93, 0.83}, creamD = {0.8, 0.74, 0.63}, ink = {0.26, 0.15, 0.07},
+  light = {1, 0.96, 0.86}, mut = {0.66, 0.58, 0.47},
+  orange = {0.94, 0.62, 0.22}, orangeD = {0.6, 0.45, 0.28}, gold = {0.98, 0.8, 0.36},
+  red = {0.84, 0.3, 0.2}, pink = {0.96, 0.52, 0.47}, green = {0.4, 0.72, 0.42},
+  greenL = {0.62, 0.86, 0.55}, yellow = {0.98, 0.86, 0.45}, blue = {0.3, 0.45, 0.8},
+  night = {0.07, 0.08, 0.15}, black = {0, 0, 0},
+}
+local C = U.C
+
+function U.init()
+  local path
+  for _, p in ipairs({ "font.ttf", "font.otf" }) do
+    if love.filesystem.getInfo(p) then path = p end
+  end
+  local function f(sz)
+    if path then return lg.newFont(path, sz) end
+    return lg.newFont(math.floor(sz * 0.85))
+  end
+  U.fS, U.fM, U.fL, U.fXL = f(15), f(19), f(26), f(42)
+  U.fontOK = path ~= nil
+end
+
+function U.setc(c, a) lg.setColor(c[1], c[2], c[3], a or 1) end
+function U.box(c, x, y, w, h, r, mode, a)
+  U.setc(c, a); lg.rectangle(mode or "fill", x, y, w, h, r or 8, r or 8)
+end
+function U.txt(s, x, y, c, f, w, al, a)
+  lg.setFont(f or U.fM); U.setc(c or C.light, a)
+  if w then lg.printf(s, x, y, w, al or "left") else lg.print(s, x, y) end
+end
+-- 深棕描边字(主界面风格)
+function U.txtO(s, x, y, c, f, w, al)
+  for _, d in ipairs({ { -2, 0 }, { 2, 0 }, { 0, -2 }, { 0, 2 }, { 0, 3 } }) do
+    U.txt(s, x + d[1], y + d[2], C.woodD, f, w, al)
+  end
+  U.txt(s, x, y, c, f, w, al)
+end
+
+function U.hit(x, y, w, h) return U.mx >= x and U.mx <= x + w and U.my >= y and U.my <= y + h end
+function U.zone(x, y, w, h, fn) U.buttons[#U.buttons + 1] = { x = x, y = y, w = w, h = h, fn = fn, enabled = true } end
+
+function U.button(label, x, y, w, h, fn, enabled, sub)
+  if enabled == nil then enabled = true end
+  local hov = enabled and U.hit(x, y, w, h)
+  U.box(C.woodD, x, y + 4, w, h, 12)
+  U.box(enabled and (hov and C.gold or C.orange) or C.orangeD, x, y, w, h, 12)
+  U.box(C.woodD, x, y, w, h, 12, "line")
+  local ty = sub and (y + 6) or (y + h / 2 - U.fM:getHeight() / 2)
+  U.txt(label, x, ty, enabled and C.ink or C.wood, U.fM, w, "center")
+  if sub then U.txt(sub, x + 4, y + h - 22, C.ink, U.fS, w - 8, "center", 0.8) end
+  U.buttons[#U.buttons + 1] = { x = x, y = y, w = w, h = h, fn = fn, enabled = enabled }
+end
+
+-- 场景里的漂浮热点(上方小字标收益)
+function U.hotspot(label, tag, x, y, w, col, fn, enabled)
+  local h = 44
+  local hov = enabled and U.hit(x, y, w, h)
+  U.box(C.woodD, x, y + 3, w, h, 22, "fill", 0.9)
+  U.box(enabled and col or C.creamD, x, y, w, h, 22)
+  if hov then lg.setLineWidth(3); U.box(C.light, x, y, w, h, 22, "line"); lg.setLineWidth(1) end
+  U.txt(label, x, y + h / 2 - U.fM:getHeight() / 2, C.ink, U.fM, w, "center")
+  if tag then U.txtO(tag, x, y - 22, C.light, U.fS, w, "center") end
+  if enabled then U.zone(x, y, w, h, fn) end
+end
+
+function U.dashRect(x, y, w, h, c, a)
+  U.setc(c, a); lg.setLineWidth(2)
+  local function seg(x1, y1, x2, y2)
+    local len = math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+    local n = math.max(1, math.floor(len / 18))
+    for i = 0, n - 1 do
+      local t1, t2 = i / n, math.min(1, (i + 0.6) / n)
+      lg.line(x1 + (x2 - x1) * t1, y1 + (y2 - y1) * t1, x1 + (x2 - x1) * t2, y1 + (y2 - y1) * t2)
+    end
+  end
+  seg(x, y, x + w, y); seg(x + w, y, x + w, y + h); seg(x + w, y + h, x, y + h); seg(x, y + h, x, y)
+  lg.setLineWidth(1)
+end
+
+-- 立绘/素材占位框:显示资源 ID,替换素材时按 ID 对应
+function U.placeholder(id, desc, x, y, w, h)
+  U.box(C.light, x, y, w, h, 18, "fill", 0.14)
+  U.dashRect(x, y, w, h, C.light, 0.85)
+  U.txtO("【立绘占位】", x, y + h / 2 - 46, C.light, U.fM, w, "center")
+  U.txtO(id, x, y + h / 2 - 14, C.gold, U.fM, w, "center")
+  if desc then U.txtO(desc, x + 14, y + h / 2 + 18, C.light, U.fS, w - 28, "center") end
+end
+
+-- 图片素材:assets/<素材ID>.png 或 .jpg,找不到时逐级去掉 ID 末段再找
+-- 例:ist_child_happy → ist_child → ist,所以只放一张 ist.png 也能用
+local cache = {}
+local function find(id)
+  if cache[id] then return cache[id] end
+  for _, ext in ipairs({ ".png", ".jpg", ".jpeg" }) do
+    local p = "assets/" .. id .. ext
+    if love.filesystem.getInfo(p) then cache[id] = lg.newImage(p); return cache[id] end
+  end
+  return nil
+end
+function U.image(id)
+  local s = id
+  while s do
+    local im = find(s)
+    if im then return im end
+    s = s:find("_") and s:match("^(.*)_[^_]*$") or nil
+  end
+  return nil
+end
+
+-- 立绘:有图就按框等比缩放、底部对齐;没图显示占位框
+function U.portrait(id, desc, x, y, w, h)
+  local im = U.image(id)
+  if not im then U.placeholder(id, desc, x, y, w, h); return end
+  local iw, ih = im:getWidth(), im:getHeight()
+  local sc = math.min(w / iw, h / ih)
+  lg.setColor(1, 1, 1, 1)
+  lg.draw(im, x + (w - iw * sc) / 2, y + h - ih * sc, 0, sc, sc)
+end
+
+-- 背景:有图就铺满屏幕,返回 true
+function U.background(id)
+  local im = U.image(id)
+  if not im then return false end
+  local iw, ih = im:getWidth(), im:getHeight()
+  local sc = math.max(U.W / iw, U.H / ih)
+  lg.setColor(1, 1, 1, 1)
+  lg.draw(im, (U.W - iw * sc) / 2, (U.H - ih * sc) / 2, 0, sc, sc)
+  return true
+end
+
+function U.tag(s, x, y)
+  lg.setFont(U.fS)
+  local w = U.fS:getWidth(s) + 20
+  U.box(C.black, x, y, w, 26, 6, "fill", 0.45)
+  U.txt(s, x + 10, y + 4, C.light, U.fS)
+end
+
+-- 弹窗:一个或两个按钮;打开时屏蔽下层点击
+function U.openPopup(title, body, btn, onOk, cancel)
+  U.popup = { title = title, body = body, btn = btn or "继续", onOk = onOk, cancel = cancel }
+end
+function U.drawPopup()
+  local p = U.popup
+  if not p then return end
+  U.box(C.black, 0, 0, U.W, U.H, 0, "fill", 0.5)
+  U.zone(0, 0, U.W, U.H, function() end)
+  local x, y, w, h = 330, 170, 620, 380
+  U.box(C.woodD, x - 6, y - 6, w + 12, h + 12, 18)
+  U.box(C.cream, x, y, w, h, 14)
+  U.txt(p.title, x, y + 26, C.ink, U.fL, w, "center")
+  U.txt(p.body, x + 40, y + 84, C.ink, U.fM, w - 80, "center")
+  local function close(ok)
+    U.popup = nil
+    if ok and p.onOk then p.onOk() end
+  end
+  if p.cancel then
+    U.button(p.cancel, x + 120, y + h - 80, 170, 56, function() close(false) end)
+    U.button(p.btn, x + w - 290, y + h - 80, 170, 56, function() close(true) end)
+  else
+    U.button(p.btn, x + w / 2 - 100, y + h - 80, 200, 56, function() close(true) end)
+  end
+end
+
+function U.toast(s) U.toastS, U.toastT = s, 2 end
+function U.update(dt) if U.toastT > 0 then U.toastT = U.toastT - dt end end
+function U.drawToast()
+  if U.toastT <= 0 or not U.toastS then return end
+  local a = math.min(1, U.toastT * 2)
+  lg.setFont(U.fM)
+  local w = math.min(1000, U.fM:getWidth(U.toastS) + 60)
+  U.box(C.woodD, U.W / 2 - w / 2, 150, w, 50, 25, "fill", 0.9 * a)
+  U.txt(U.toastS, U.W / 2 - w / 2, 164, C.light, U.fM, w, "center", a)
+end
+
+function U.beginFrame()
+  U.buttons = {}
+  U.mx, U.my = love.mouse.getPosition()
+end
+function U.click(x, y)
+  U.mx, U.my = x, y
+  for i = #U.buttons, 1, -1 do
+    local b = U.buttons[i]
+    if b.enabled and x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h then b.fn(); return end
+  end
+end
+
+return U
+
+end
+package.preload["data.activities"] = function(...)
+-- 日程活动:ap=行动力消耗,eff=效果(摩拉为负表示学费),unlock=第几年开放,say=她的反应
+return {
+  { name = "吟游课", place = "蒙德", ap = 3, eff = { emo = 4, imag = 3, mood = -4, mora = -40 },
+    say = "她跟着诗人哼了半首歌,剩下半首是自己编的。" },
+  { name = "契约学堂", place = "璃月", ap = 3, eff = { wit = 5, mood = -5, mora = -40 },
+    say = "她把契约条款背得一字不差,然后问你:“永远”是多久?" },
+  { name = "剑术道场", place = "稻妻", ap = 3, eff = { body = 5, mood = -6, mora = -40 },
+    say = "木刀比她还高,她还是挥完了一百下。" },
+  { name = "歌剧院练习", place = "枫丹", ap = 3, eff = { emo = 3, imag = 4, mood = -3, mora = -50 },
+    say = "她在后台看完了一整场戏,散场时哭了。" },
+  { name = "教令院旁听", place = "须弥", ap = 4, eff = { wit = 8, div = 3, exp = 3, mood = -6, mora = -60 }, unlock = 2,
+    say = "讲到古代文字时,她小声纠正了学者的读音。" },
+  { name = "竞技场观摩", place = "纳塔", ap = 4, eff = { body = 8, mood = -8, mora = -40 }, unlock = 2,
+    say = "她学会了一个新词:“再来”。" },
+  { name = "万民堂帮厨", place = "打工", ap = 3, eff = { body = 1, hum = 2, mood = -5, mora = 80 },
+    say = "她把萝卜切成了沙漏的形状。" },
+  { name = "冒险家协会委托", place = "打工", ap = 4, eff = { body = 2, mood = -8, mora = 130 },
+    say = "委托完成了,她把报酬全交给了你。" },
+  { name = "修行权能", place = "秘密", ap = 2, eff = { div = 6, imag = 2, exp = 6, mood = -3 },
+    say = "沙漏里的沙动了一下。窗外好像有什么在看。" },
+  { name = "出门散步", place = "休息", ap = 2, eff = { mood = 15, hum = 2 },
+    say = "她在路边蹲了很久,只为看一只蜗牛爬过去。" },
+}
+
+end
+package.preload["data.assets"] = function(...)
+-- 素材 ID 清单:代码里所有占位框都引用这里的 ID,替换素材时按 ID 对应
+return {
+  portraits = {
+    ist_child_sleep = "伊斯塔露·幼年 · 熟睡,蜷缩,怀抱停摆的沙漏",
+    ist_child_calm  = "伊斯塔露·幼年 · 平静",
+    ist_child_happy = "伊斯塔露·幼年 · 开心",
+    ist_child_sad   = "伊斯塔露·幼年 · 不安",
+    ist_teen_calm   = "伊斯塔露·少年 · 平静",
+    ist_teen_happy  = "伊斯塔露·少年 · 开心",
+    ist_teen_sad    = "伊斯塔露·少年 · 不安",
+    ist_adult_calm  = "伊斯塔露·青年 · 平静",
+    ist_adult_happy = "伊斯塔露·青年 · 开心",
+    ist_adult_sad   = "伊斯塔露·青年 · 不安",
+  },
+  backgrounds = {
+    bg_ruin_night   = "天钉坠落的山谷 · 夜",
+    bg_home_room    = "家中卧室(主界面)",
+    bg_home_night   = "家中 · 夜",
+    bg_sky_tianding = "夜空中的钉状冷光",
+  },
+}
+
+end
+package.preload["data.story"] = function(...)
+-- 剧情脚本
+-- 节点字段:who 说话人(nil 为旁白) / text / bg 背景ID / portrait 立绘ID("@calm" 表示按当前年龄段自动选,"none" 隐藏)
+-- choices = { { t = 选项文字, eff = 效果, flag = {键, 值}, say = 选后旁白 } }
+local P = {}
+
+P.opening = {
+  { bg = "bg_ruin_night", portrait = "none", text = "那一夜,一道钉状的冷光坠进了蒙德城外的山谷。" },
+  { text = "光落下的地方没有声音,连风都停了。" },
+  { who = "你", text = "……那是什么?" },
+  { text = "你本该转身离开。可你是——",
+    choices = {
+      { t = "退役的冒险家", eff = { body = 5 }, flag = { "father", "adventurer" },
+        say = "多年的直觉告诉你,坑底有活物。(她的体魄起点更高)" },
+      { t = "落魄的学者", eff = { wit = 5 }, flag = { "father", "scholar" },
+        say = "你认出了坑壁上的纹路,那不是这个时代的东西。(她的智识起点更高)" },
+      { t = "走南闯北的商人", eff = { mora = 300 }, flag = { "father", "merchant" },
+        say = "你掂了掂钱袋,还是走了下去。(初始摩拉更多)" },
+    } },
+  { text = "坑底没有陨石。只有一个蜷着身子的孩子,手里攥着一枚停摆的沙漏。", portrait = "ist_child_sleep" },
+  { text = "她身上没有伤。沙漏里的沙,一粒也没有落下。",
+    choices = {
+      { t = "抱起她", eff = { hum = 3 }, say = "她很轻,轻得像一段还没开始的时间。" },
+      { t = "先看看那枚沙漏", eff = { div = 2, exp = 2 }, say = "沙漏在你掌心亮了一下,又暗了下去。" },
+    } },
+  { who = "???", text = "……" },
+  { who = "你", text = "你叫什么名字?" },
+  { who = "???", text = "……伊斯……塔露。" },
+  { text = "她说完就睡着了,像是用尽了全部的力气。" },
+  { text = "远处传来了脚步声。",
+    choices = {
+      { t = "用斗篷裹住她,从小路离开", eff = { hum = 2 },
+        say = "你们绕了很远的路。回头时,山谷里的冷光已经熄了。" },
+      { t = "站在原地等", eff = { exp = 10 },
+        say = "只是巡逻的骑士。可你总觉得,还有别的什么,看见了她。(暴露度 +10)" },
+    } },
+  { bg = "bg_home_night", portrait = "ist_child_sleep", text = "就这样,你的屋子里多了一个孩子。" },
+  { text = "离她长大成人,还有三年。" },
+}
+
+P.events = {
+  { id = "first_night", when = function(S) return S.year == 1 and S.month == 1 end, script = {
+    { bg = "bg_home_night", portrait = "ist_child_calm", text = "第一个夜晚,她没有睡。" },
+    { text = "她坐在窗边,把沙漏举到月光下,一遍一遍地看。",
+      choices = {
+        { t = "给她讲个故事", eff = { emo = 3, hum = 3 }, say = "你讲了风神与诗人的故事。她听到一半,靠在你肩上睡着了。" },
+        { t = "陪她一起数沙子", eff = { wit = 3, div = 2 }, say = "沙子一粒也没有落下。她却数得很认真。" },
+      } },
+  } },
+  { id = "first_word", when = function(S) return S.year == 1 and S.month == 2 end, script = {
+    { bg = "bg_home_room", portrait = "ist_child_happy", who = "伊斯塔露", text = "……时间。" },
+    { who = "你", text = "什么?" },
+    { who = "伊斯塔露", text = "你身上,有很多时间。" },
+    { text = "这是她来到这个家以后,说的第一句完整的话。",
+      choices = {
+        { t = "“那你呢?”", eff = { imag = 3 }, say = "她想了很久,摇了摇头。" },
+        { t = "“以后慢慢告诉我。”", eff = { hum = 3, mood = 10 }, say = "她点点头,第一次对你笑了。" },
+      } },
+  } },
+  { id = "heart_father", when = function(S) return S.year == 1 and S.month == 4 end, script = {
+    { bg = "bg_home_room", portrait = "ist_child_calm", who = "伊斯塔露", text = "你……是我的什么?" },
+    { text = "她问得很认真。",
+      choices = {
+        { t = "守护你的人", eff = { body = 2, hum = 2 }, flag = { "goal", "guard" }, say = "她把沙漏往你手里塞了塞,像是交给你保管。" },
+        { t = "教你长大的人", eff = { wit = 3 }, flag = { "goal", "guide" }, say = "她郑重地点头:“那,老师。”" },
+        { t = "陪你一起走的人", eff = { emo = 3, mood = 10 }, flag = { "goal", "companion" }, say = "她牵住了你的手指。" },
+      } },
+    { text = "(你的回答会影响她今后如何看待你。)" },
+  } },
+  { id = "tianding_light", when = function(S) return S.year == 1 and S.month == 6 end, script = function(S)
+    local sc = { { bg = "bg_sky_tianding", portrait = "@calm", text = "夜空里出现了一道钉状的冷光,和你捡到她那晚一模一样。" } }
+    if S.st.exp >= 20 then
+      sc[#sc + 1] = { portrait = "@sad", who = "伊斯塔露", text = "它……在找我。" }
+      sc[#sc + 1] = { text = "冷光在屋顶上方停了很久。",
+        choices = {
+          { t = "抱紧她", eff = { hum = 5, exp = -5 }, say = "冷光终于移开了。她在你怀里发抖到天亮。" },
+          { t = "拉上窗帘", eff = { exp = -3, mood = -5 }, say = "屋里暗了下来。她一句话也没说。" },
+        } }
+    else
+      sc[#sc + 1] = { who = "伊斯塔露", text = "它看不见我。" }
+      sc[#sc + 1] = { text = "冷光掠过山谷,消失了。", choices = {
+        { t = "摸摸她的头", eff = { hum = 2, mood = 5 }, say = "她眯起眼睛,像一只晒太阳的猫。" } } }
+    end
+    sc[#sc + 1] = { text = "(暴露度越高,天理就越容易找到她。修行权能、教令院旁听都会增加暴露度,“藏起沙漏”可以降低它。)" }
+    return sc
+  end },
+  { id = "year2", when = function(S) return S.year == 2 and S.month == 1 end, script = {
+    { bg = "bg_home_room", portrait = "@calm", text = "又是一年。她长高了,已经够得着书架顶层。" },
+    { who = "伊斯塔露", text = "我想去更远的地方看看。" },
+    { text = "(进入少年期。须弥、纳塔的课程已开放。)" },
+  } },
+  { id = "year3", when = function(S) return S.year == 3 and S.month == 1 end, script = {
+    { bg = "bg_home_room", portrait = "@calm", text = "第三年的春天。她站在门口,背影已经很像大人了。" },
+    { who = "伊斯塔露", text = "如果有一天我必须离开,你会怪我吗?" },
+    { text = "(进入青年期。离她成年只剩最后一年。)" },
+  } },
+}
+
+-- 点击她时的日常对话,按年龄段与心情选
+P.talk = {
+  child = {
+    happy = { "今天的云,走得很慢。", "我数到一百了!", "你回来啦。" },
+    calm = { "沙漏今天也没有动。", "……要出门吗?" },
+    sad = { "我不想上课。", "……可以抱一下吗?" },
+  },
+  teen = {
+    happy = { "下次带我去港口好不好?", "我交到朋友了。" },
+    calm = { "书里说,时间是一条河。你觉得呢?", "今天也辛苦了。" },
+    sad = { "别管我。", "……我是不是很奇怪?" },
+  },
+  adult = {
+    happy = { "谢谢你,一直都在。", "我想记住今天。" },
+    calm = { "我在想以后的事。", "窗外的光,好像近了一点。" },
+    sad = { "如果我不是我就好了。", "……我有点累。" },
+  },
+}
+
+return P
+
+end
+package.preload["game.flow"] = function(...)
+-- 月度流程:月初事件 → 主界面安排 → 月末结算
+local S = require("game.state")
+local R = require("core.router")
+local story = require("data.story")
+local F = {}
+
+function F.newGame()
+  S.new()
+  R.go("dialogue", { script = story.opening, onDone = F.startMonth })
+end
+
+function F.startMonth()
+  if F.isOver() then R.go("ending", { kind = "grown" }); return end
+  for _, ev in ipairs(story.events) do
+    if not S.flags["ev_" .. ev.id] and ev.when(S) then
+      S.flags["ev_" .. ev.id] = true
+      R.go("dialogue", { script = ev.script, onDone = function()
+        if not F.checkFail() then R.go("home") end
+      end })
+      return
+    end
+  end
+  R.go("home")
+end
+
+-- 月末:扣生活费、恢复心情、推进时间;返回结算说明
+function F.endMonth()
+  local res = S.apply({ mora = -S.CFG.livingCost, mood = S.CFG.moodRegen })
+  S.month = S.month + 1
+  if S.month > 12 then S.month, S.year = 1, S.year + 1 end
+  S.ap, S.talked = S.CFG.apMax, false
+  return res
+end
+
+function F.checkFail()
+  if S.st.exp >= 100 then R.go("ending", { kind = "exposed" }); return true end
+  return false
+end
+
+function F.isOver() return S.monthIndex() > S.CFG.totalMonths end
+
+return F
+
+end
+package.preload["game.state"] = function(...)
+-- 存档数据与数值规则(对应千星奇域里的全局变量)
+local S = {}
+
+S.NAME = { body = "体魄", wit = "智识", emo = "情感", imag = "想象",
+  div = "神性", hum = "人性", exp = "暴露度", mood = "心情", mora = "摩拉" }
+S.BASE = { "body", "wit", "emo", "imag" }
+local ORDER = { "body", "wit", "emo", "imag", "div", "hum", "exp", "mood", "mora" }
+local IS_BASE = { body = true, wit = true, emo = true, imag = true }
+local CLAMP100 = { div = true, hum = true, exp = true, mood = true }
+
+-- 评级门槛:E D C B A S
+S.GRADES = { { 0, "E" }, { 30, "D" }, { 70, "C" }, { 120, "B" }, { 180, "A" }, { 250, "S" } }
+
+S.CFG = {
+  totalMonths = 36,   -- 三年,一回合一个月
+  apMax = 13,         -- 每月行动力
+  livingCost = 30,    -- 每月生活费
+  moodRegen = 8,      -- 月末心情恢复
+}
+
+function S.new()
+  S.year, S.month = 1, 1
+  S.ap = S.CFG.apMax
+  S.st = { body = 10, wit = 10, emo = 10, imag = 12, div = 30, hum = 20, exp = 0, mood = 80, mora = 300 }
+  S.flags = {}
+  S.talked = false
+end
+
+function S.monthIndex() return (S.year - 1) * 12 + S.month end
+function S.monthsLeft() return S.CFG.totalMonths - S.monthIndex() + 1 end
+function S.stage() return S.year == 1 and "幼年" or (S.year == 2 and "少年" or "青年") end
+function S.stageKey() return S.year == 1 and "child" or (S.year == 2 and "teen" or "adult") end
+function S.moodKey()
+  local m = S.st.mood
+  if m >= 70 then return "happy" elseif m >= 35 then return "calm" end
+  return "sad"
+end
+
+function S.grade(v)
+  local g, nxt = "E", nil
+  for i, t in ipairs(S.GRADES) do
+    if v >= t[1] then g = t[2]; nxt = S.GRADES[i + 1] and S.GRADES[i + 1][1] or nil end
+  end
+  return g, nxt
+end
+
+-- 心情影响成长:高心情 ×1.2,低心情 ×0.5
+function S.moodMult()
+  local m = S.st.mood
+  if m >= 70 then return 1.2 elseif m < 30 then return 0.5 end
+  return 1
+end
+
+-- 应用效果表,返回变化说明文字
+function S.apply(eff)
+  local out = {}
+  for _, k in ipairs(ORDER) do
+    local v = eff[k]
+    if v and v ~= 0 then
+      if IS_BASE[k] and v > 0 then v = math.max(1, math.floor(v * S.moodMult() + 0.5)) end
+      local old = S.st[k]
+      local nv = old + v
+      if CLAMP100[k] then nv = math.max(0, math.min(100, nv))
+      elseif k ~= "mora" then nv = math.max(0, nv) end
+      S.st[k] = nv
+      local d = nv - old
+      if d ~= 0 then out[#out + 1] = S.NAME[k] .. (d > 0 and " +" or " ") .. d end
+    end
+  end
+  return table.concat(out, "   ")
+end
+
+function S.canAfford(eff, ap)
+  if S.ap < (ap or 0) then return false, "行动力不足" end
+  if eff and eff.mora and eff.mora < 0 and S.st.mora < -eff.mora then return false, "摩拉不足" end
+  return true
+end
+
+return S
+
+end
+package.preload["scenes.dialogue"] = function(...)
+-- 对话场景:序章与月初事件共用
+local U = require("core.ui")
+local S = require("game.state")
+local A = require("data.assets")
+local lg = love.graphics
+local C = U.C
+local D = {}
+local cur
+
+local BG = {
+  bg_ruin_night = { 0.07, 0.08, 0.15 }, bg_home_night = { 0.17, 0.11, 0.09 },
+  bg_home_room = { 0.55, 0.37, 0.19 }, bg_sky_tianding = { 0.05, 0.06, 0.13 },
+}
+
+local function resolve(p)
+  if p:sub(1, 1) == "@" then return "ist_" .. S.stageKey() .. "_" .. p:sub(2) end
+  return p
+end
+
+local function nextNode()
+  cur.i = cur.i + 1
+  local n = cur.script[cur.i]
+  if not n then cur.onDone(); return end
+  if n.bg then cur.bg = n.bg end
+  if n.portrait then cur.portrait = n.portrait ~= "none" and resolve(n.portrait) or nil end
+end
+
+function D.enter(args)
+  local sc = args.script
+  if type(sc) == "function" then sc = sc(S) end
+  cur = { script = sc, i = 0, onDone = args.onDone, bg = "bg_home_room" }
+  nextNode()
+end
+
+local function choose(c)
+  local ch = c.eff and S.apply(c.eff) or ""
+  if c.flag then S.flags[c.flag[1]] = c.flag[2] end
+  if c.say then cur.extra = { text = c.say, changes = ch } else nextNode() end
+end
+
+local function advance()
+  if cur.extra then cur.extra = nil; nextNode(); return end
+  local n = cur.script[cur.i]
+  if n and n.choices then return end
+  nextNode()
+end
+
+function D.draw()
+  local n = cur.script[cur.i]
+  if not n then return end
+  local bgc = BG[cur.bg] or C.night
+  lg.clear(bgc[1], bgc[2], bgc[3])
+  if not U.background(cur.bg) then
+    if cur.bg == "bg_sky_tianding" or cur.bg == "bg_ruin_night" then
+      U.setc(C.light, 0.7); lg.setLineWidth(4); lg.line(930, 0, 880, 250); lg.setLineWidth(1)
+    end
+    U.tag("背景占位:" .. cur.bg .. "  " .. (A.backgrounds[cur.bg] or ""), 16, 16)
+  end
+  U.zone(0, 0, U.W, U.H, advance)
+  if cur.portrait then U.portrait(cur.portrait, A.portraits[cur.portrait], 440, 30, 400, 470) end
+
+  local who, text = n.who, n.text
+  if cur.extra then who, text = nil, cur.extra.text end
+  local x, y, w, h = 90, 510, 1100, 190
+  U.box(C.woodD, x - 6, y - 6, w + 12, h + 12, 18, "fill", 0.95)
+  U.box(C.cream, x, y, w, h, 14)
+  if who then
+    U.box(C.orange, x + 30, y - 24, 160, 42, 10)
+    U.txt(who, x + 30, y - 15, C.ink, U.fM, 160, "center")
+  end
+  U.txt(text, x + 40, y + 34, C.ink, U.fL, w - 80)
+  if cur.extra and cur.extra.changes ~= "" then U.txt(cur.extra.changes, x + 40, y + h - 44, C.red, U.fM, w - 300) end
+
+  if n.choices and not cur.extra then
+    local k = #n.choices
+    for i, c in ipairs(n.choices) do
+      U.button(c.t, U.W / 2 - 230, 480 - (k - i + 1) * 70, 460, 58, function() choose(c) end)
+    end
+  else
+    U.txt("点击继续", x, y + h - 32, C.mut, U.fS, w - 30, "right")
+  end
+end
+
+return D
+
+end
+package.preload["scenes.ending"] = function(...)
+-- 结算界面(完整结局系统待实现,这里先给出倾向)
+local U = require("core.ui")
+local S = require("game.state")
+local F = require("game.flow")
+local lg = love.graphics
+local C = U.C
+local E = {}
+
+local CAREER = { body = "骑士团 / 千岩军 方向", wit = "教令院 / 学者 方向",
+  emo = "吟游诗人 / 歌剧院 方向", imag = "占星 / 艺术 方向" }
+local GOAL = { guard = "守护者", guide = "引路人", companion = "同行者" }
+
+function E.enter(a) E.kind = a.kind end
+
+function E.draw()
+  lg.clear(C.night[1], C.night[2], C.night[3])
+  U.box(C.cream, 240, 60, 800, 600, 16)
+  local exposed = E.kind == "exposed"
+  U.txt(exposed and "天理察觉" or "她长大了", 240, 92, exposed and C.red or C.ink, U.fXL, 800, "center")
+  U.txt(exposed and "暴露度达到上限。夜空中的冷光,终于落在了你们的屋顶上。"
+    or "三年过去了。那个攥着沙漏的孩子,如今站在门口,回头对你笑。", 300, 160, C.ink, U.fM, 680, "center")
+  local best = "body"
+  for _, k in ipairs(S.BASE) do if S.st[k] > S.st[best] then best = k end end
+  local lines = {}
+  for _, k in ipairs(S.BASE) do
+    local g = S.grade(S.st[k])
+    lines[#lines + 1] = S.NAME[k] .. " " .. S.st[k] .. "(" .. g .. ")"
+  end
+  local fate
+  if S.st.div > S.st.hum + 15 then fate = "神性占上风:更接近“回归”或“叛离”"
+  elseif S.st.hum > S.st.div + 15 then fate = "人性占上风:更接近“凡人”"
+  else fate = "神性与人性相当:可能走向“融合”" end
+  local body = table.concat(lines, "    ") ..
+    "\n\n职业倾向:" .. CAREER[best] ..
+    "\n命运倾向:" .. fate ..
+    "\n你在她心中:" .. (GOAL[S.flags.goal] or "未定") ..
+    "\n\n神性 " .. S.st.div .. "    人性 " .. S.st.hum .. "    暴露度 " .. S.st.exp .. "    摩拉 " .. S.st.mora ..
+    "\n\n(完整结局判定待实现)"
+  U.txt(body, 300, 240, C.ink, U.fM, 680, "center")
+  U.button("重新开始", 540, 580, 200, 58, F.newGame)
+end
+
+return E
+
+end
+package.preload["scenes.home"] = function(...)
+-- 主界面:房间 + 顶栏 + 属性面板 + 场景热点 + 日程安排面板
+local U = require("core.ui")
+local S = require("game.state")
+local R = require("core.router")
+local F = require("game.flow")
+local ACT = require("data.activities")
+local A = require("data.assets")
+local story = require("data.story")
+local lg = love.graphics
+local C = U.C
+local H = { sched = false }
+
+local STAT_COL = { body = C.red, wit = C.green, emo = C.pink, imag = C.blue }
+
+function H.enter()
+  H.sched = false
+  if not S.flags.tutorial then
+    S.flags.tutorial = true
+    U.openPopup("每个月的安排",
+      "每月有 " .. S.CFG.apMax .. " 点行动力。\n点“安排”选课程或打工,点房间里的物品做小事,点她可以聊天。\n心情越好,成长越快。\n点“结束本月”进入下个月。", "开始")
+  end
+end
+
+local function preview(eff)
+  local t = {}
+  for _, k in ipairs({ "body", "wit", "emo", "imag", "div", "hum", "exp", "mood" }) do
+    local v = eff[k]
+    if v then t[#t + 1] = S.NAME[k] .. (v > 0 and "+" or "") .. v end
+  end
+  return table.concat(t, "  ")
+end
+
+local function quick(name, ap, eff)
+  S.ap = S.ap - ap
+  local ch = S.apply(eff)
+  if F.checkFail() then return end
+  U.toast(name .. "   " .. ch)
+end
+
+local function talk()
+  local lines = story.talk[S.stageKey()][S.moodKey()]
+  local line = lines[love.math.random(1, #lines)]
+  if S.talked then U.toast("她说:“" .. line .. "”"); return end
+  S.talked = true
+  U.toast("她说:“" .. line .. "”   " .. S.apply({ emo = 1, mood = 3 }))
+end
+
+local function endMonth()
+  local function go()
+    local res = F.endMonth()
+    U.openPopup("月末结算", "生活费 -" .. S.CFG.livingCost .. ",心情恢复 +" .. S.CFG.moodRegen .. "\n\n" .. res,
+      F.isOver() and "迎来成年" or "下个月", F.startMonth)
+  end
+  if S.ap > 0 then
+    U.openPopup("结束本月?", "还剩 " .. S.ap .. " 点行动力,结束后会作废。", "结束本月", go, "再想想")
+  else go() end
+end
+
+---------------------------------------------------------------- 绘制
+local function drawRoom()
+  if U.background("bg_home_room") then return end
+  lg.clear(C.wall[1], C.wall[2], C.wall[3])
+  for i = 0, 31 do U.setc(C.woodD, 0.18); lg.rectangle("fill", i * 40, 0, 3, 520) end
+  U.box(C.floor, 0, 520, U.W, 200, 0)
+  U.box(C.woodD, 450, 100, 380, 320, 6)
+  U.box(C.window, 465, 115, 350, 290, 4, "fill", 0.95)
+  U.setc(C.woodD); lg.rectangle("fill", 636, 115, 8, 290); lg.rectangle("fill", 465, 256, 350, 8)
+  U.box(C.woodD, 50, 170, 220, 350, 6)
+  for i = 0, 3 do U.box(C.woodL, 62, 236 + i * 70, 196, 8, 2) end
+  U.box(C.woodD, 960, 430, 300, 200, 10)
+  U.box(C.cream, 975, 445, 270, 64, 10)
+  U.box(C.green, 975, 500, 270, 116, 10)
+  U.setc(C.orange, 0.35); lg.ellipse("fill", 640, 668, 320, 44)
+  U.tag("背景占位:bg_home_room", 360, 92)
+end
+
+local function clamp01(v) return math.max(0, math.min(1, v)) end
+
+local function pill(x, w, icon, text, frac, col)
+  local y = 26
+  U.box(C.woodD, x, y, w, 48, 24)
+  U.box(C.black, x + 42, y + 9, w - 54, 30, 15, "fill", 0.35)
+  U.box(col, x + 42, y + 9, (w - 54) * clamp01(frac), 30, 15)
+  U.txtO(text, x + 42, y + 12, C.light, U.fM, w - 54, "center")
+  U.box(col, x - 6, y - 4, 56, 56, 28)
+  U.box(C.woodD, x - 6, y - 4, 56, 56, 28, "line")
+  U.txt(icon, x - 6, y + 14, C.ink, U.fS, 56, "center")
+end
+
+local function drawTop()
+  U.box(C.woodD, 14, 10, 310, 126, 16)
+  U.box(C.wood, 20, 16, 298, 114, 12)
+  U.box(C.woodL, 20, 16, 298, 114, 12, "line")
+  U.txtO("第 " .. S.year .. " 年 · " .. S.stage(), 30, 22, C.light, U.fM, 278, "center")
+  U.txtO(S.month .. " 月", 30, 46, C.gold, U.fXL, 278, "center")
+  U.txtO("距她成年还有 " .. S.monthsLeft() .. " 回合", 30, 102, C.light, U.fS, 278, "center")
+
+  pill(352, 200, "摩拉", tostring(S.st.mora), 1, C.gold)
+  pill(582, 260, "行动", S.ap .. "/" .. S.CFG.apMax, S.ap / S.CFG.apMax, C.yellow)
+  pill(872, 214, "心情", S.st.mood .. "/100", S.st.mood / 100, C.pink)
+
+  local x = 1102
+  U.box(C.woodD, x, 10, 168, 126, 14)
+  U.txtO("暴露度", x, 16, C.light, U.fS, 168, "center")
+  U.box(C.black, x + 14, 44, 140, 14, 6, "fill", 0.5)
+  U.box(C.red, x + 14, 44, 140 * S.st.exp / 100, 14, 6)
+  U.txt(S.st.exp .. "/100", x, 62, C.light, U.fS, 168, "center")
+  U.txt("神性 " .. S.st.div .. "  人性 " .. S.st.hum, x, 94, C.gold, U.fS, 168, "center")
+end
+
+local function drawStats()
+  local x, y = 8, 452
+  U.box(C.woodD, x, y, 346, 262, 14)
+  U.box(C.wood, x + 6, y + 6, 334, 250, 10)
+  U.txtO("成长倍率 ×" .. S.moodMult() .. "(看心情)", x + 18, y + 14, C.light, U.fS)
+  for i, k in ipairs(S.BASE) do
+    local v = S.st[k]
+    local g, nxt = S.grade(v)
+    local ry = y + 44 + (i - 1) * 52
+    U.box(C.cream, x + 16, ry, 316, 46, 8)
+    U.box(C.woodL, x + 16, ry, 316, 46, 8, "line")
+    U.txt(S.NAME[k], x + 26, ry + 12, STAT_COL[k], U.fM)
+    U.txt(tostring(v), x + 80, ry + 6, C.ink, U.fL)
+    if nxt then U.txt("还差 " .. (nxt - v), x + 160, ry + 15, C.mut, U.fS) end
+    U.txt(g, x + 270, ry + 6, STAT_COL[k], U.fL, 50, "center")
+  end
+end
+
+local function drawSchedule()
+  U.box(C.black, 0, 0, U.W, U.H, 0, "fill", 0.5)
+  U.zone(0, 0, U.W, U.H, function() end)
+  local px, py, pw, ph = 120, 56, 1040, 616
+  U.box(C.woodD, px - 6, py - 6, pw + 12, ph + 12, 18)
+  U.box(C.cream, px, py, pw, ph, 14)
+  U.txt("本月安排", px + 30, py + 20, C.ink, U.fL)
+  U.txt("剩余行动力 " .. S.ap .. "    摩拉 " .. S.st.mora .. "    心情 " .. S.st.mood .. "(成长 ×" .. S.moodMult() .. ")",
+    px + 190, py + 28, C.ink, U.fM)
+  U.button("关闭", px + pw - 130, py + 16, 110, 46, function() H.sched = false end)
+  for i, a in ipairs(ACT) do
+    local col, row = (i - 1) % 3, math.floor((i - 1) / 3)
+    local x, y, w, h = px + 30 + col * 330, py + 84 + row * 128, 310, 116
+    local ok, why = S.canAfford(a.eff, a.ap)
+    if a.unlock and S.year < a.unlock then ok, why = false, "第 " .. a.unlock .. " 年开放" end
+    local hov = ok and U.hit(x, y, w, h)
+    U.box(ok and (hov and C.yellow or C.light) or C.creamD, x, y, w, h, 10)
+    U.box(C.woodL, x, y, w, h, 10, "line")
+    U.box(C.orange, x + 10, y + 10, 64, 26, 13)
+    U.txt(a.place, x + 10, y + 13, C.ink, U.fS, 64, "center")
+    U.txt(a.name, x + 84, y + 10, C.ink, U.fM)
+    local m = a.eff.mora
+    U.txt("行动力 " .. a.ap .. (m and ("    摩拉 " .. (m > 0 and "+" or "") .. m) or ""), x + 12, y + 46, C.wood, U.fS)
+    U.txt(preview(a.eff), x + 12, y + 70, C.ink, U.fS, w - 24)
+    if not ok then U.txt(why, x, y + h - 24, C.red, U.fS, w - 12, "right") end
+    if ok then
+      U.zone(x, y, w, h, function()
+        S.ap = S.ap - a.ap
+        local ch = S.apply(a.eff)
+        if F.checkFail() then H.sched = false; return end
+        U.openPopup(a.place .. " · " .. a.name, a.say .. "\n\n" .. ch)
+      end)
+    end
+  end
+end
+
+function H.draw()
+  drawRoom()
+  -- 女儿立绘(按年龄段 + 心情切换 ID)
+  local id = "ist_" .. S.stageKey() .. "_" .. S.moodKey()
+  U.portrait(id, A.portraits[id], 470, 150, 340, 570)
+  U.zone(500, 160, 280, 520, talk)
+  if not S.talked then U.txtO("点她聊天", 500, 640, C.light, U.fS, 280, "center") end
+
+  local can = S.ap >= 1
+  U.hotspot("读书", "+智识", 100, 330, 150, C.greenL, function() quick("读书", 1, { wit = 2, mood = -2 }) end, can)
+  U.hotspot("陪她玩", "+情感 +心情", 100, 410, 150, C.yellow, function() quick("陪她玩", 1, { emo = 2, mood = 6 }) end, can)
+  U.hotspot("藏起沙漏", "-暴露度", 840, 330, 160, C.creamD, function() quick("藏起沙漏", 1, { exp = -3, div = -1 }) end, can)
+  U.hotspot("结束本月", "床", 1030, 372, 170, C.orange, endMonth, true)
+
+  drawTop()
+  drawStats()
+  U.button("外出探险", 930, 648, 160, 62, function() end, false, "开发中")
+  U.button("安排", 1106, 648, 160, 62, function() H.sched = true end)
+  if H.sched then drawSchedule() end
+end
+
+return H
+
+end
+-- 天理的女儿 · 养成框架 v0.3
+-- 运行环境:LÖVE 11.x  https://love2d.org
+-- 中文显示:把中文 TTF/OTF 字体改名为 font.ttf 放在本目录
+--
+-- 目录结构
+--   core/ui.lua         界面基础(按钮、占位框、弹窗)
+--   core/router.lua     场景切换
+--   game/state.lua      数值与存档数据
+--   game/flow.lua       月度流程
+--   data/assets.lua     素材 ID 清单(立绘、背景)
+--   data/activities.lua 日程活动表
+--   data/story.lua      序章、月初事件、日常对话
+--   scenes/*.lua        对话 / 主界面 / 结算
+
+local U = require("core.ui")
+local R = require("core.router")
+local F = require("game.flow")
+R.scenes.dialogue = require("scenes.dialogue")
+R.scenes.home = require("scenes.home")
+R.scenes.ending = require("scenes.ending")
+
+function love.load()
+  love.window.setTitle("天理的女儿 · 养成框架 v0.3")
+  U.init()
+  F.newGame()
+end
+
+function love.update(dt) U.update(dt) end
+
+function love.draw()
+  U.beginFrame()
+  R.cur.draw()
+  U.drawPopup()
+  U.drawToast()
+  if not U.fontOK then
+    U.txt("Chinese font missing: put a CJK font named font.ttf next to main.lua", 10, U.H - 22, U.C.red, U.fS)
+  end
+end
+
+function love.mousepressed(x, y, b)
+  if b == 1 then U.click(x, y) end
+end
+</script>
+<script src="https://cdn.jsdelivr.net/npm/fengari-web@0.1.4/dist/fengari-web.js"></script>
+<script>
+(function(){
+const errBox=document.getElementById('err');
+function fail(m){errBox.style.display='block';errBox.textContent='运行出错:\n'+m;}
+if(!window.fengari){fail('Lua 虚拟机(fengari-web)没有加载成功,请检查网络后刷新。');return;}
+const {lua,lauxlib,lualib,to_luastring}=fengari;
+const W=1280,H=720,cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const dpr=Math.min(window.devicePixelRatio||1,2);cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
+const FONT='"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif';
+let mx=-1,my=-1;
+const L=lauxlib.luaL_newstate();lualib.luaL_openlibs(L);
+const num=i=>lua.lua_tonumber(L,i),str=i=>lua.lua_tojsstring(L,i),has=i=>lua.lua_type(L,i)>0;
+function reg(n,f){lua.lua_pushjsfunction(L,f);lua.lua_setglobal(L,to_luastring(n));}
+function paint(m){if(m==='line')ctx.stroke();else ctx.fill();}
+reg('_js_color',()=>{const a=has(4)?num(4):1;const c=`rgba(${Math.round(num(1)*255)},${Math.round(num(2)*255)},${Math.round(num(3)*255)},${a})`;ctx.fillStyle=c;ctx.strokeStyle=c;return 0;});
+reg('_js_rect',()=>{const x=num(2),y=num(3),w=num(4),h=num(5),r=num(6)||0;if(w<=0||h<=0)return 0;ctx.beginPath();
+  if(ctx.roundRect&&r>0)ctx.roundRect(x,y,w,h,Math.min(r,w/2,h/2));else ctx.rect(x,y,w,h);paint(str(1));return 0;});
+reg('_js_circle',()=>{ctx.beginPath();ctx.arc(num(2),num(3),Math.max(0,num(4)),0,Math.PI*2);paint(str(1));return 0;});
+reg('_js_ellipse',()=>{ctx.beginPath();ctx.ellipse(num(2),num(3),Math.max(0,num(4)),Math.max(0,num(5)),0,0,Math.PI*2);paint(str(1));return 0;});
+reg('_js_poly',()=>{const n=lua.lua_gettop(L);ctx.beginPath();ctx.moveTo(num(2),num(3));for(let i=4;i<n;i+=2)ctx.lineTo(num(i),num(i+1));ctx.closePath();paint(str(1));return 0;});
+reg('_js_line',()=>{const n=lua.lua_gettop(L);ctx.beginPath();ctx.moveTo(num(1),num(2));for(let i=3;i<n;i+=2)ctx.lineTo(num(i),num(i+1));ctx.stroke();return 0;});
+reg('_js_measure',()=>{ctx.font=num(2)+'px '+FONT;lua.lua_pushnumber(L,ctx.measureText(str(1)).width);return 1;});
+const IMGS={};
+reg('_js_hasimg',()=>{const im=IMGS[str(1)];lua.lua_pushboolean(L,!!(im&&im.complete&&im.naturalWidth>0));return 1;});
+reg('_js_imgsize',()=>{const im=IMGS[str(1)];lua.lua_pushnumber(L,im?im.naturalWidth:1);lua.lua_pushnumber(L,im?im.naturalHeight:1);return 2;});
+reg('_js_drawimg',()=>{const im=IMGS[str(1)];if(im&&im.complete)ctx.drawImage(im,num(2),num(3),im.naturalWidth*num(4),im.naturalHeight*num(5));return 0;});
+const STATUS={};
+const KNOWN=['bg_ruin_night','bg_home_room','bg_home_night','bg_sky_tianding'];
+function showStatus(){document.getElementById('loaded').textContent=Object.keys(STATUS).map(k=>{const st=STATUS[k];
+  if(st==='err')return k+' ✗读取失败';if(st==='load')return k+' …';
+  return (k==='ist'||k.startsWith('ist_')||KNOWN.includes(k))?k+' ✓':k+' ⚠名字不对应任何素材ID';}).join('    ');}
+document.getElementById('files').addEventListener('change',e=>{
+  for(const f of e.target.files){const id=f.name.replace(/\.[^.]+$/,'').trim();STATUS[id]='load';
+    const rd=new FileReader();
+    rd.onload=()=>{const im=new Image();im.onload=()=>{IMGS[id]=im;STATUS[id]='ok';showStatus();};im.onerror=()=>{STATUS[id]='err';showStatus();};im.src=rd.result;};
+    rd.onerror=()=>{STATUS[id]='err';showStatus();};
+    rd.readAsDataURL(f);}
+  showStatus();e.target.value='';});
+reg('_js_lw',()=>{ctx.lineWidth=num(1);return 0;});
+reg('_js_clear',()=>{ctx.fillStyle=`rgb(${Math.round(num(1)*255)},${Math.round(num(2)*255)},${Math.round(num(3)*255)})`;ctx.fillRect(0,0,W,H);return 0;});
+reg('_js_mouse',()=>{lua.lua_pushnumber(L,mx);lua.lua_pushnumber(L,my);return 2;});
+reg('_js_text',()=>{const s=str(1),x=num(2),y=num(3),size=num(4),w=num(5),al=str(6);
+  ctx.font=size+'px '+FONT;ctx.textBaseline='top';const lh=Math.floor(size*1.25),lines=[];
+  for(const para of s.split('\n')){if(w<0){lines.push(para);continue;}let cur='';
+    for(const ch of Array.from(para)){if(cur&&ctx.measureText(cur+ch).width>w){lines.push(cur);cur=ch;}else cur+=ch;}lines.push(cur);}
+  lines.forEach((ln,i)=>{let dx=x;if(w>=0){const lw=ctx.measureText(ln).width;if(al==='center')dx=x+(w-lw)/2;else if(al==='right')dx=x+w-lw;}
+    ctx.fillText(ln,dx,y+i*lh+size*0.1);});return 0;});
+function run(code,name){const b=to_luastring(code);if(lauxlib.luaL_loadbuffer(L,b,b.length,to_luastring(name))!==lua.LUA_OK||lua.lua_pcall(L,0,0,0)!==lua.LUA_OK){fail(lua.lua_tojsstring(L,-1));return false;}return true;}
+function call(name,args){lua.lua_getglobal(L,to_luastring('love'));lua.lua_getfield(L,-1,to_luastring(name));
+  if(lua.lua_type(L,-1)!==lua.LUA_TFUNCTION){lua.lua_pop(L,2);return true;}
+  for(const a of args||[]){if(typeof a==='number')lua.lua_pushnumber(L,a);else lua.lua_pushstring(L,to_luastring(a));}
+  if(lua.lua_pcall(L,(args||[]).length,0,0)!==lua.LUA_OK){fail(lua.lua_tojsstring(L,-1));lua.lua_pop(L,2);return false;}
+  lua.lua_pop(L,1);return true;}
+function pos(e){const r=cv.getBoundingClientRect();mx=(e.clientX-r.left)*W/r.width;my=(e.clientY-r.top)*H/r.height;}
+cv.addEventListener('pointermove',pos);
+cv.addEventListener('pointerleave',()=>{mx=-1;my=-1;});
+cv.addEventListener('pointerdown',e=>{pos(e);call('draw');call('mousepressed',[mx,my,1]);});
+addEventListener('keydown',e=>{if(e.key==='Escape')call('keypressed',['escape']);});
+lua.lua_pushstring(L,to_luastring(String(Date.now()%100000)));lua.lua_setglobal(L,to_luastring('_SEED'));
+if(!run(document.getElementById('prelude').textContent+'\nmath.randomseed(tonumber(_SEED))','=prelude'))return;
+if(!run(document.getElementById('mainlua').textContent,'=main.lua'))return;
+if(!call('load'))return;
+let last=performance.now(),ok=true;
+function frame(t){if(!ok)return;const dt=Math.min(0.1,(t-last)/1000);last=t;ok=call('update',[dt])&&call('draw');if(ok)requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+})();
+</script></body></html>
